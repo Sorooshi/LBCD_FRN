@@ -412,7 +412,6 @@ def run_louvain(y, p, labels, rho, xi, n_clusters):
             labels = deepcopy(updated_labels)
             print("labels final:", labels)
 
-
     return labels
 
 

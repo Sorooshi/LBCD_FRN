@@ -32,8 +32,9 @@ def args_parser(args):
     pp = args.PreProcessing
     setting = args.Setting
     n_clusters = args.N_clusters
+    max_iterations = args.Max_iterations
 
-    return name, run, rho, xi, with_noise, pp, setting, n_clusters
+    return name, run, rho, xi, with_noise, pp, setting, n_clusters, max_iterations
 
 
 def preprocess_y(y_in, data_type):
@@ -225,7 +226,7 @@ def compute_gain(y, p, rho, xi, indices):
     return gain
 
 
-def phase_one(y, p, labels, rho, xi, greedy):
+def phase_one(y, y_original, p, p_original, labels, rho, xi, greedy):
 
     """
     :param y: N*V entity-to-feature matrix
@@ -240,7 +241,6 @@ def phase_one(y, p, labels, rho, xi, greedy):
     clusters_labels = list(set(labels.values()))
     clusters_number = len(clusters_labels)
     clusters_indices = {label: [] for label in clusters_labels}
-    updated_labels = {}
 
     # grouping clusters w.r.t their indices
     for k, v in labels.items():
@@ -251,23 +251,32 @@ def phase_one(y, p, labels, rho, xi, greedy):
     # print("clusters_indices:", clusters_indices)
 
     for node in range(y.shape[0]):
-
         label = labels[node]
 
-        # print("node:", node, "current community:", "label", label)
+        # print("node:", node, "current community:", label, "n_labels:", len(set(labels.values())))
+        # print('old labels:', labels)
 
-        gain_old = compute_gain(y=y, p=p, rho=rho, xi=xi, indices=[node])
+        tmp_indices = [k for k, v in labels.items() if v == label]
+
+        gain_old = compute_gain(y=y_original, p=p_original, rho=rho, xi=xi, indices=tmp_indices)
         # print("old gain:", gain_old)
         neighbours = select_neighbours(p=p, node=node)
         # print("neighbours:", neighbours)
 
         if greedy is True:
+
             tmp_gains = np.zeros([y.shape[0]])
 
         for neighbour in neighbours:
-            gain_new = compute_gain(y=y, p=p, rho=rho, xi=xi, indices=[node, neighbour])
+
+            tmp_indices = [k for k, v in labels.items() if v == label]
+            tmp_indices += [neighbour]
+
+            gain_new = compute_gain(y=y_original, p=p_original, rho=rho, xi=xi, indices=tmp_indices)
+
             # print("new gain:", gain_new)
             delta = gain_new - gain_old
+
             if greedy is True and delta > 0:
                 tmp_gains[neighbour] = delta
             elif greedy is False and delta > 0:
@@ -276,10 +285,11 @@ def phase_one(y, p, labels, rho, xi, greedy):
                 break
         if greedy is True:
             for i in clusters_indices[label]:
-                # print("i:", i, clusters_indices[label])
                 labels[i] = labels[np.argmax(tmp_gains)]
+            # print("new labels for node:", node, "arg max", np.argmax(tmp_gains), "n_labels:", len(set(labels.values())))
+            # print("new labels:", labels)
 
-    # print("end of 1st stage!")
+    print("end of 1st stage!")
 
     return labels
 
@@ -287,7 +297,7 @@ def phase_one(y, p, labels, rho, xi, greedy):
 def phase_two(y_original, p_original, labels, directed=False):
 
     clusters_labels = list(set(labels.values()))
-    clusters_number = len(clusters_labels)
+    clusters_number = len(clusters_labels) - 1
     clusters_indices = {label: [] for label in range(clusters_number)}
 
     y_agg = np.zeros([clusters_number, y_original.shape[1]])
@@ -342,20 +352,22 @@ def phase_two(y_original, p_original, labels, directed=False):
         if directed is False:
             idx = k.split("-")
             p_agg[int(idx[0]), int(idx[1])] = v
+            p_agg[int(idx[1]), int(idx[0])] = v
         else:
             idx = k.split("-")
             p_agg[int(idx[0]), int(idx[1])] = v[0]
             p_agg[int(idx[1]), int(idx[0])] = v[1]
 
-    # print("aggregate matrices:", y_agg.shape, p_agg.shape,)
+    print("aggregate matrices:", y_agg.shape, p_agg.shape,)
+    print(y_agg)
+    print(p_agg)
 
     return y_agg, p_agg, updated_labels
 
 
-def run_louvain(y, p, labels, rho, xi, n_clusters):
+def run_louvain(y, p, labels, rho, xi, n_clusters, max_iterations):
 
     f1 = True
-    max_iters = 100
 
     y_original = deepcopy(y)
     p_original = deepcopy(p)
@@ -364,7 +376,8 @@ def run_louvain(y, p, labels, rho, xi, n_clusters):
 
         labels_old = deepcopy(labels)
 
-        labels_new = phase_one(y=y, p=p, labels=labels, rho=rho, xi=xi, greedy=True)
+        labels_new = phase_one(y=y, y_original=y_original, p=p, p_original=p_original,
+                               labels=labels, rho=rho, xi=xi, greedy=True)
 
         # print("labels old:", len(set(labels_old.values())), labels_old, )
         # print(" ")
@@ -379,12 +392,17 @@ def run_louvain(y, p, labels, rho, xi, n_clusters):
                 cntr = 0
                 break
 
-        labels = deepcopy(labels_new)
+        labels = {}
+        clusters_labels = list(set(labels_new.values()))
+        for k, v in labels_new.items():
+            for label in range(len(clusters_labels)):
+                if v == clusters_labels[label]:
+                    labels[k] = label
 
         # End of phase one, that is entity swing does not improve the gain anymore
         if list(labels.values()) == list(labels_old.values()):
 
-            # print("Applying phase two by merging nodes of the same community and repeating the 1st phase")
+            print("Applying phase two by merging nodes of the same community and repeating the 1st phase")
 
             y_agg, p_agg, updated_labels = phase_two(y_original=y_original, p_original=p_original,
                                                      labels=labels, directed=False)
@@ -393,10 +411,11 @@ def run_louvain(y, p, labels, rho, xi, n_clusters):
             labels = deepcopy(updated_labels)
 
         n_detected_clusters = len(set(labels.values()))
-        print("n_clusters:", n_clusters, "n_detected_clusters:", n_detected_clusters,  "max_iters:", max_iters)
-        max_iters -= 1
+        print("n_clusters:", n_clusters, "n_detected_clusters:", n_detected_clusters,
+              "max_iterations:", max_iterations)
+        max_iterations -= 1
 
-        if n_detected_clusters <= n_clusters or max_iters == 0:
+        if n_detected_clusters <= n_clusters or max_iterations == 0:
             f1 = False
             updated_labels = {}
             clusters_indices = []
@@ -444,10 +463,20 @@ if __name__ == '__main__':
     parser.add_argument('--N_clusters', type=int, default=5,
                         help='Determine the number of detected clusters')
 
+    parser.add_argument('--Max_iterations', type=int, default=50,
+                        help='Maximum number of iterations for optimizing the criterion in a local search')
+
     args = parser.parse_args()
-    name, run, rho, xi, with_noise, pp, setting_, n_clusters = args_parser(args)
+    name, run, rho, xi, with_noise, pp, setting_, n_clusters, max_iterations = args_parser(args)
+
+    data_name = name.split('(')[0]
+    if with_noise == 1:
+        data_name = data_name + "-N"
+    type_of_data = name.split('(')[0][-1]
+    print("run:", run, name, pp, with_noise, setting_, data_name, type_of_data)
 
     start = time.time()
+    
     if run == 1:
 
         with open(os.path.join('../data', name + ".pickle"), 'rb') as fp:
@@ -459,6 +488,7 @@ if __name__ == '__main__':
 
             # Global initialization
             out_ms = {}
+
             if setting_ != 'all':
                 for setting, repeats in DATA.items():
 
@@ -478,14 +508,14 @@ if __name__ == '__main__':
                             labels = {k: k for k in range(y.shape[0])}
 
                             # Quantitative case
-                            if name.split('(')[0][-1] == 'Q':
+                            if type_of_data == 'Q' or name.split('(')[-1] == 'r':
                                 _, _, y_z, _, y_rng, _, = preprocess_y(y_in=y, data_type='Q')
 
                                 if with_noise == 1:
                                     y_n, _, y_n_z, _, y_n_rng, _, = preprocess_y(y_in=y_n, data_type='Q')
 
                             # Because there is no y_n in the case of categorical features.
-                            if name.split('(')[0][-1] == 'C':
+                            if type_of_data == 'C':
                                 enc = OneHotEncoder(sparse=False, )  # categories='auto')
                                 y_onehot = enc.fit_transform(y)  # oneHot encoding
 
@@ -493,7 +523,7 @@ if __name__ == '__main__':
                                 # "WITH follow-up" y_onehot should be rep_laced with Y
                                 y, _, y_z, _, y_rng, _, = preprocess_y(y_in=y_onehot, data_type='C')  # y_onehot
 
-                            if name.split('(')[0][-1] == 'M':
+                            if type_of_data == 'M':
                                 v_q = int(np.ceil(v/2))  # number of quantitative features -- Y[:, :v_q]
                                 v_c = int(np.floor(v/2))  # number of categorical features  -- Y[:, v_q:]
                                 _, _, y_z_q, _, y_rng_q, _, = preprocess_y(y_in=y[:, :v_q], data_type='Q')
@@ -531,60 +561,93 @@ if __name__ == '__main__':
                                     y_n_rng = np.concatenate([y_rng, y_n_rng_], axis=1)
                                     y_n_z = np.concatenate([y_z, y_n_z_], axis=1)
 
-                            P, _, _, p_u, _, _, p_m, _, _, p_l, _, _ = preprocess_p(p=p)
+                            p, _, _, p_u, _, _, p_m, _, _, p_l, _, _ = preprocess_p(p=p)
 
                             # Pre-processing - Without Noise
                             if data_type == "NP".lower() and with_noise == 0:
                                 print("NP")
-                                tmp_ms = run_louvain(y=y, p=p, labels=labels, rho=rho, xi=xi, n_clusters=n_clusters)
+                                tmp_ms = run_louvain(y=y, p=p, labels=labels,
+                                                     rho=rho, xi=xi, n_clusters=n_clusters,
+                                                     max_iterations=max_iterations)
+
+                            elif data_type == "z-n".lower() and with_noise == 0:
+                                print("z-n")
+                                tmp_ms = run_louvain(y=y_z, p=p, labels=labels,
+                                                     rho=rho, xi=xi, n_clusters=n_clusters,
+                                                     max_iterations=max_iterations)
+
+                            elif data_type == "rng-n".lower() and with_noise == 0:
+                                print("z-n")
+                                tmp_ms = run_louvain(y=y_rng, p=p, labels=labels,
+                                                     rho=rho, xi=xi, n_clusters=n_clusters,
+                                                     max_iterations=max_iterations)
 
                             elif data_type == "z-u".lower() and with_noise == 0:
                                 print("z-u")
-                                tmp_ms = run_louvain(y=y_z, p=p_u, labels=labels, rho=rho, xi=xi, n_clusters=n_clusters)
+                                tmp_ms = run_louvain(y=y_z, p=p_u, labels=labels,
+                                                     rho=rho, xi=xi, n_clusters=n_clusters,
+                                                     max_iterations=max_iterations)
 
                             elif data_type == "z-m".lower() and with_noise == 0:
-                                tmp_ms = run_louvain(y=y_z, p=p_m, labels=labels, rho=rho, xi=xi, n_clusters=n_clusters)
+                                tmp_ms = run_louvain(y=y_z, p=p_m, labels=labels,
+                                                     rho=rho, xi=xi, n_clusters=n_clusters,
+                                                     max_iterations=max_iterations)
 
                             elif data_type == "z-l".lower() and with_noise == 0:
-                                tmp_ms = run_louvain(y=y_z, p=p_l, labels=labels, rho=rho, xi=xi, n_clusters=n_clusters)
+                                tmp_ms = run_louvain(y=y_z, p=p_l, labels=labels,
+                                                     rho=rho, xi=xi, n_clusters=n_clusters,
+                                                     max_iterations=max_iterations)
 
                             elif data_type == "rng-u".lower() and with_noise == 0:
-                                tmp_ms = run_louvain(y=y_rng, p=p_u, labels=labels, rho=rho, xi=xi, n_clusters=n_clusters)
+                                tmp_ms = run_louvain(y=y_rng, p=p_u, labels=labels,
+                                                     rho=rho, xi=xi, n_clusters=n_clusters,
+                                                     max_iterations=max_iterations)
 
                             elif data_type == "rng-m".lower() and with_noise == 0:
-                                tmp_ms = run_louvain(y=y_rng, p=p_m, labels=labels, rho=rho, xi=xi, n_clusters=n_clusters)
+                                tmp_ms = run_louvain(y=y_rng, p=p_m, labels=labels,
+                                                     rho=rho, xi=xi, n_clusters=n_clusters,
+                                                     max_iterations=max_iterations)
 
                             elif data_type == "rng-l".lower() and with_noise == 0:
-                                tmp_ms = run_louvain(y=y_rng, p=p_l, labels=labels, rho=rho, xi=xi, n_clusters=n_clusters)
+                                tmp_ms = run_louvain(y=y_rng, p=p_l, labels=labels,
+                                                     rho=rho, xi=xi, n_clusters=n_clusters,
+                                                     max_iterations=max_iterations)
 
                             # Pre-processing - With Noise
                             if data_type == "NP".lower() and with_noise == 1:
                                 tmp_ms = run_louvain(y=y_n, p=p, labels=labels, 
-                                                     rho=rho, xi=xi, n_clusters=n_clusters)
+                                                     rho=rho, xi=xi, n_clusters=n_clusters,
+                                                     max_iterations=max_iterations)
 
                             elif data_type == "z-u".lower() and with_noise == 1:
                                 tmp_ms = run_louvain(y=y_n_z, p=p_u, labels=labels, 
-                                                     rho=rho, xi=xi, n_clusters=n_clusters)
+                                                     rho=rho, xi=xi, n_clusters=n_clusters,
+                                                     max_iterations=max_iterations)
 
                             elif data_type == "z-m".lower() and with_noise == 1:
                                 tmp_ms = run_louvain(y=y_n_z, p=p_m, labels=labels,
-                                                     rho=rho, xi=xi, n_clusters=n_clusters)
+                                                     rho=rho, xi=xi, n_clusters=n_clusters,
+                                                     max_iterations=max_iterations)
 
                             elif data_type == "z-l".lower() and with_noise == 1:
                                 tmp_ms = run_louvain(y=y_n_z, p=p_l, labels=labels,
-                                                     rho=rho, xi=xi, n_clusters=n_clusters)
+                                                     rho=rho, xi=xi, n_clusters=n_clusters,
+                                                     max_iterations=max_iterations)
 
                             elif data_type == "rng-u".lower() and with_noise == 1:
                                 tmp_ms = run_louvain(y=y_n_rng, p=p_u, labels=labels, 
-                                                    rho=rho, xi=xi, n_clusters=n_clusters)
+                                                    rho=rho, xi=xi, n_clusters=n_clusters,
+                                                    max_iterations=max_iterations)
 
                             elif data_type == "rng-m".lower() and with_noise == 1:
                                 tmp_ms = run_louvain(y=y_n_rng, p=p_m, labels=labels,
-                                                     rho=rho, xi=xi, n_clusters=n_clusters)
+                                                     rho=rho, xi=xi, n_clusters=n_clusters,
+                                                     max_iterations=max_iterations)
 
                             elif data_type == "rng-l".lower() and with_noise == 1:
                                 tmp_ms = run_louvain(y=y_n_rng, p=p_l, labels=labels,
-                                                     rho=rho, xi=xi, n_clusters=n_clusters)
+                                                     rho=rho, xi=xi, n_clusters=n_clusters,
+                                                     max_iterations=max_iterations)
 
                             out_ms[setting][repeat] = tmp_ms
 
@@ -607,21 +670,21 @@ if __name__ == '__main__':
                         labels = {k: k for k in range(y.shape[0])}
 
                         # Quantitative case
-                        if name.split('(')[0][-1] == 'Q':
+                        if type_of_data == 'Q' or name.split('(')[-1] == 'r':
                             _, _, y_z, _, y_rng, _, = preprocess_y(y_in=y, data_type='Q')
 
                             if with_noise == 1:
                                 y_n, _, y_n_z, _, y_n_rng, _, = preprocess_y(y_in=y_n, data_type='Q')
 
                         # Because there is no y_n in the case of categorical features.
-                        if name.split('(')[0][-1] == 'C':
+                        if type_of_data == 'C':
                             enc = OneHotEncoder()  # categories='auto')
                             y = enc.fit_transform(y)  # oneHot encoding
                             y = y.toarray()
                             # Boris's Theory
                             y, _, y_z, _, y_rng, _, = preprocess_y(y_in=y, data_type='C')
 
-                        if name.split('(')[0][-1] == 'M':
+                        if type_of_data == 'M':
                             v_q = int(np.ceil(v/2))  # number of quantitative features -- Y[:, :v_q]
                             v_c = int(np.floor(v/2))  # number of categorical features  -- Y[:, v_q:]
                             Y_, _, y_z_, _, y_rng_, _, = preprocess_y(y_in=Y[:, :v_q], data_type='M')
@@ -653,60 +716,86 @@ if __name__ == '__main__':
                         # Pre-processing - Without Noise
                         if data_type == "NP".lower() and with_noise == 0:
                             tmp_ms = run_louvain(y=y, p=p, labels=labels,
-                                                 rho=rho, xi=xi, n_clusters=n_clusters)
+                                                 rho=rho, xi=xi, n_clusters=n_clusters,
+                                                 max_iterations=max_iterations)
+
+                        elif data_type == "z-n".lower() and with_noise == 0:
+                            print("z-n")
+                            tmp_ms = run_louvain(y=y_z, p=p, labels=labels,
+                                                 rho=rho, xi=xi, n_clusters=n_clusters,
+                                                 max_iterations=max_iterations)
+
+                        elif data_type == "rng-n".lower() and with_noise == 0:
+                            print("z-n")
+                            tmp_ms = run_louvain(y=y_rng, p=p, labels=labels,
+                                                 rho=rho, xi=xi, n_clusters=n_clusters,
+                                                 max_iterations=max_iterations)
 
                         elif data_type == "z-u".lower() and with_noise == 0:
                             tmp_ms = run_louvain(y=y_z, p=p_u, labels=labels,
-                                                 rho=rho, xi=xi, n_clusters=n_clusters)
+                                                 rho=rho, xi=xi, n_clusters=n_clusters,
+                                                 max_iterations=max_iterations)
 
                         elif data_type == "z-m".lower() and with_noise == 0:
                             tmp_ms = run_louvain(y=y_z, p=p_m, labels=labels,
-                                                 rho=rho, xi=xi, n_clusters=n_clusters)
+                                                 rho=rho, xi=xi, n_clusters=n_clusters,
+                                                 max_iterations=max_iterations)
 
                         elif data_type == "z-l".lower() and with_noise == 0:
                             tmp_ms = run_louvain(y=y_z, p=p_l, labels=labels,
-                                                 rho=rho, xi=xi, n_clusters=n_clusters)
+                                                 rho=rho, xi=xi, n_clusters=n_clusters,
+                                                 max_iterations=max_iterations)
 
                         elif data_type == "rng-u".lower() and with_noise == 0:
                             tmp_ms = run_louvain(y=y_rng, p=p_u, labels=labels,
-                                                 rho=rho, xi=xi, n_clusters=n_clusters)
+                                                 rho=rho, xi=xi, n_clusters=n_clusters,
+                                                 max_iterations=max_iterations)
 
                         elif data_type == "rng-m".lower() and with_noise == 0:
                             tmp_ms = run_louvain(y=y_rng, p=p_m, labels=labels,
-                                                 rho=rho, xi=xi, n_clusters=n_clusters)
+                                                 rho=rho, xi=xi, n_clusters=n_clusters,
+                                                 max_iterations=max_iterations)
 
                         elif data_type == "rng-l".lower() and with_noise == 0:
                             tmp_ms = run_louvain(y=y_rng, p=p_l, labels=labels,
-                                                 rho=rho, xi=xi, n_clusters=n_clusters)
+                                                 rho=rho, xi=xi, n_clusters=n_clusters,
+                                                 max_iterations=max_iterations)
 
                         # Pre-processing - With Noise
                         if data_type == "NP".lower() and with_noise == 1:
                             tmp_ms = run_louvain(y=y_n, p=p, labels=labels,
-                                                 rho=rho, xi=xi, n_clusters=n_clusters)
+                                                 rho=rho, xi=xi, n_clusters=n_clusters,
+                                                 max_iterations=max_iterations)
 
                         elif data_type == "z-u".lower() and with_noise == 1:
                             tmp_ms = run_louvain(y=y_n_z, p=p_u, labels=labels,
-                                                 rho=rho, xi=xi, n_clusters=n_clusters)
+                                                 rho=rho, xi=xi, n_clusters=n_clusters,
+                                                 max_iterations=max_iterations)
 
                         elif data_type == "z-m".lower() and with_noise == 1:
                             tmp_ms = run_louvain(y=y_n_z, p=p_m, labels=labels,
-                                                 rho=rho, xi=xi, n_clusters=n_clusters)
+                                                 rho=rho, xi=xi, n_clusters=n_clusters,
+                                                 max_iterations=max_iterations)
 
                         elif data_type == "z-l".lower() and with_noise == 1:
                             tmp_ms = run_louvain(y=y_n_z, p=p_l, labels=labels,
-                                                 rho=rho, xi=xi, n_clusters=n_clusters)
+                                                 rho=rho, xi=xi, n_clusters=n_clusters,
+                                                 max_iterations=max_iterations)
 
                         elif data_type == "rng-u".lower() and with_noise == 1:
                             tmp_ms =run_louvain(y=y_n_rng, p=p_u, labels=labels,
-                                                rho=rho, xi=xi, n_clusters=n_clusters)
+                                                rho=rho, xi=xi, n_clusters=n_clusters,
+                                                max_iterations=max_iterations)
 
                         elif data_type == "rng-m".lower() and with_noise == 1:
                             tmp_ms = run_louvain(y=y_n_rng, p=p_m, labels=labels,
-                                                 rho=rho, xi=xi, n_clusters=n_clusters)
+                                                 rho=rho, xi=xi, n_clusters=n_clusters,
+                                                 max_iterations=max_iterations)
 
                         elif data_type == "rng-l".lower() and with_noise == 1:
                             tmp_ms = run_louvain(y=y_n_rng, p=p_l, labels=labels,
-                                                 rho=rho, xi=xi, n_clusters=n_clusters)
+                                                 rho=rho, xi=xi, n_clusters=n_clusters,
+                                                 max_iterations=max_iterations)
 
                         out_ms[setting][repeat] = tmp_ms
 
@@ -741,7 +830,10 @@ if __name__ == '__main__':
             ARI, NMI = [], []
             for repeat, result in results.items():
                 lp, lpi = list(result.values()), list(result.keys())
-                gt, gti = flat_ground_truth(DATA[setting][repeat]['GT'])
+                if not name.split('(')[-1] == 'r':
+                    gt, gti = flat_ground_truth(DATA[setting][repeat]['GT'])
+                else:
+                    gt = DATA[setting][repeat]['GT']
 
                 ARI.append(metrics.adjusted_rand_score(gt, lp))
                 NMI.append(metrics.adjusted_mutual_info_score(gt, lp))
@@ -760,7 +852,11 @@ if __name__ == '__main__':
             precision, recall, fscore = [], [], []
             for repeat, result in results.items():
                 lp, lpi = list(result.values()), list(result.keys())
-                gt, _ = flat_ground_truth(DATA[setting][repeat]['GT'])
+
+                if not name.split('(')[-1] == 'r':
+                    gt, gti = flat_ground_truth(DATA[setting][repeat]['GT'])
+                else:
+                    gt = DATA[setting][repeat]['GT']
 
                 tmp = metrics.precision_recall_fscore_support(gt, lp, average='weighted')
 
@@ -788,7 +884,7 @@ if __name__ == '__main__':
         for setting, results in out_ms.items():
             num_cluster = []
             for repeat, result in results.items():
-                num_cluster.append(int(len(result.keys())))
+                num_cluster.append(int(len(set(result.values()))))
 
             ave_num_clust = np.mean(np.asarray(num_cluster), axis=0)
             std_num_clust = np.std(np.asarray(num_cluster), axis=0)
@@ -830,7 +926,11 @@ if __name__ == '__main__':
             ARI, NMI = [], []
             for repeat, result in results.items():
                 lp, lpi = list(result.values()), list(result.keys())
-                gt, gti = flat_ground_truth(DATA[setting][repeat]['GT'])
+
+                if not name.split('(')[-1] == 'r':
+                    gt, gti = flat_ground_truth(DATA[setting][repeat]['GT'])
+                else:
+                    gt = DATA[setting][repeat]['GT']
 
                 ARI.append(metrics.adjusted_rand_score(gt, lp))
                 NMI.append(metrics.adjusted_mutual_info_score(gt, lp))
@@ -849,7 +949,11 @@ if __name__ == '__main__':
             precision, recall, fscore = [], [], []
             for repeat, result in results.items():
                 lp, lpi = list(result.values()), list(result.keys())
-                gt, _ = flat_ground_truth(DATA[setting][repeat]['GT'])
+
+                if not name.split('(')[-1] == 'r':
+                    gt, gti = flat_ground_truth(DATA[setting][repeat]['GT'])
+                else:
+                    gt = DATA[setting][repeat]['GT']
 
                 tmp = metrics.precision_recall_fscore_support(gt, lp, average='weighted')
 
@@ -877,7 +981,7 @@ if __name__ == '__main__':
         for setting, results in out_ms.items():
             num_cluster = []
             for repeat, result in results.items():
-                num_cluster.append(int(len(result.keys())))
+                num_cluster.append(int(len(set(result.values()))))
 
             ave_num_clust = np.mean(np.asarray(num_cluster), axis=0)
             std_num_clust = np.std(np.asarray(num_cluster), axis=0)

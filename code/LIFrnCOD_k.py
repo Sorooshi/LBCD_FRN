@@ -411,15 +411,15 @@ def run_louvain(y, p, labels, rho, xi, n_clusters, max_iterations):
         labels = deepcopy(labels_new)
 
         # End of phase one, that is entity swing does not improve the gain anymore
-        if list(labels.values()) == list(labels_old.values()):
+        # if list(labels.values()) == list(labels_old.values()):
 
-            print("Applying phase two by merging nodes of the same community and repeating the 1st phase")
+        print("Applying phase two by merging nodes of the same community and repeating the 1st phase")
 
-            y_agg, p_agg, updated_labels = phase_two(y_original=y_original, p_original=p_original,
-                                                     labels=labels, directed=False)
-            y = deepcopy(y_agg)
-            p = deepcopy(p_agg)
-            labels = deepcopy(updated_labels)
+        y_agg, p_agg, updated_labels = phase_two(y_original=y_original, p_original=p_original,
+                                                 labels=labels, directed=False)
+        y = deepcopy(y_agg)
+        p = deepcopy(p_agg)
+        labels = deepcopy(updated_labels)
 
         n_detected_clusters = len(set(labels.values()))
         print("n_clusters:", n_clusters, "n_detected_clusters:", n_detected_clusters,

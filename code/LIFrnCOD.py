@@ -233,7 +233,8 @@ def phase_one(y, y_original, p, p_original, labels, rho, xi, greedy):
     """
     :param y: N*V entity-to-feature matrix
     :param p: N*N adjacency matrix
-    :param labels: dict where keys represents the nodes index and values represents the corresponding community label
+    :param labels: dict where keys represents the nodes index and
+    values represents the corresponding community label
     :param rho:
     :param xi:
     :param greedy:
@@ -937,7 +938,6 @@ if __name__ == '__main__':
             ARI, NMI = [], []
             for repeat, result in results.items():
                 lp, lpi = list(result.values()), list(result.keys())
-
                 if not name.split('(')[-1] == 'r':
                     gt, gti = flat_ground_truth(DATA[setting][repeat]['GT'])
                 else:

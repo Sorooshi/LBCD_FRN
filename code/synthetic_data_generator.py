@@ -274,7 +274,6 @@ def generate_P(N, cardinality, p_wth, p_btw, ):
     return P
 
 
-
 def adjacency(num_nodes, edges_list):
     G = np.zeros([num_nodes, num_nodes])
     for community, edges in edges_list.items():
@@ -282,7 +281,6 @@ def adjacency(num_nodes, edges_list):
             G[edge[0], edge[1]] = 1
             G[edge[1], edge[0]] = 1
     return G
-
 
 
 def flat_ground_truth(ground_truth):
